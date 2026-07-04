@@ -1,0 +1,3 @@
+# Optional — only needed for desktop pop-up notifications.
+# The tool still works without it (on-screen + log alerts).
+plyer>=2.1

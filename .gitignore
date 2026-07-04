@@ -1,0 +1,14 @@
+# Cookie Guard runtime files (personal, don't publish)
+cookie_guard.log
+cookie_guard_alerts.log
+cookie_baseline.json
+extension_baseline.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# OS junk
+Thumbs.db
+.DS_Store
