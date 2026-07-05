@@ -1,11 +1,12 @@
 # 🍪 Cookie Guard
 
-**A simple background tool that tells you — by name — whenever an extension or program reads your browser cookies.**
+**A simple background tool that tells you — by name — whenever an extension or program reads your browser cookies, and shouts louder when something acts like a thief.**
 
 ![Python](https://img.shields.io/badge/python-3.8%2B-blue)
 ![Platform](https://img.shields.io/badge/platform-Windows%2011-lightgrey)
 ![Browser](https://img.shields.io/badge/browser-Brave%20%7C%20Chrome-orange)
 ![License](https://img.shields.io/badge/license-MIT-green)
+![Version](https://img.shields.io/badge/version-1.1-blueviolet)
 
 Cookie Guard watches your Brave (or Chrome) cookies and **raises an alert the moment something touches them** — naming the exact extension or program responsible. It's one small Python file. No installer, no account, no admin rights.
 
@@ -16,8 +17,9 @@ Cookie Guard watches your Brave (or Chrome) cookies and **raises an alert the mo
 ## 📑 Table of Contents
 - [Why this exists](#-why-this-exists)
 - [What it does](#-what-it-does)
+- [Two alert levels](#-two-alert-levels)
 - [How it works](#-how-it-works)
-- [Example alert](#-example-alert)
+- [Example alerts](#-example-alerts)
 - [Requirements](#-requirements)
 - [Installation](#-installation)
 - [One-time setup (important)](#-one-time-setup-important)
@@ -50,11 +52,28 @@ The frustrating part: a normal person has **no way to see this happening**. Brow
 
 | # | Watcher | Catches | Tells you |
 |---|---------|---------|-----------|
-| 1 | **Extension watch** | An **extension** calling a cookie API | Which extension, which call, which cookie |
+| 1 | **Extension watch** | An **extension** reading cookies | Which extension, which call, which cookie — and whether it's behaving like a **thief** |
 | 2 | **File watch** | An **external program** opening the cookie file | Which program, its path, which file |
 | 3 | **Hourly audit** | A **new** cookie-capable extension being installed | The new extension's name and risk level |
 
 Every alert is shown on screen, popped as a desktop notification, and saved to `cookie_guard.log`.
+
+---
+
+## 🚦 Two alert levels
+
+The smart part: not every cookie read is bad. Some extensions **legitimately** need to read a cookie to do their job. A thief is different — a thief grabs **lots** of cookies **fast**. So Cookie Guard sorts extension activity into two levels:
+
+| Level | Alert name | When it fires | What it means |
+|-------|-----------|---------------|---------------|
+| 🟡 **Normal read** | `EXTENSION READ A COOKIE` | An extension reads a cookie | Probably fine — the extension doing its job. Shown so you never lose visibility. |
+| 🔴 **Theft pattern** | `POSSIBLE COOKIE THEFT` | An extension reads **3+ cookies in a short burst**, OR makes a **bulk-dump call** (`cookies.getAll` / `debugger`) | Acting like a stealer — grabbing a pile of cookies at once. **Stop and check this extension.** |
+
+**In plain words:** one extension quietly reading its own single cookie = normal. An extension suddenly reading several login cookies, or dumping them all at once = **theft alert**.
+
+You can tune the sensitivity (see [commands](#-how-to-use-it)):
+- `--burst 5` → wait for 5 reads instead of 3 before the theft alert (fewer alerts)
+- `--burst-window 10` → change the "short burst" window to 10 seconds
 
 ---
 
@@ -65,38 +84,54 @@ flowchart TD
     A[Cookie Guard running] --> B[Extension Watch]
     A --> C[File Watch]
     A --> D[Hourly Audit]
-    B -->|reads Brave's Extension Activity log| E{Did an extension<br/>call a cookie API?}
-    C -->|asks Windows who has the file open| F{Did a non-Brave program<br/>open the cookie file?}
-    D -->|compares extensions to your saved baseline| G{Did a NEW cookie-capable<br/>extension appear?}
-    E -->|yes| H[🚨 ALERT + notification + log]
-    F -->|yes| H
+    B -->|reads Brave's Extension Activity log| E{Extension read a cookie?}
+    E -->|one cookie| Y[🟡 Normal read alert]
+    E -->|3+ fast, or getAll/debugger| R[🔴 POSSIBLE THEFT alert]
+    C -->|asks Windows who has the file open| F{Non-Brave program<br/>opened the cookie file?}
+    D -->|compares to your saved baseline| G{New cookie-capable<br/>extension appeared?}
+    F -->|yes| H[🚨 ALERT + notification + log]
     G -->|yes| H
+    Y --> H
+    R --> H
 ```
 
 In plain English:
 
-- **Extension watch** reads a log that Brave/Chrome can keep of everything your extensions do. When an extension calls a cookie function (like `cookies.get`), Cookie Guard sees it and alerts you.
-- **File watch** asks Windows directly, *"which programs currently have my cookie file open?"* If it's anything other than the real Brave, you get an alert. (This is the same mechanism Windows uses when it says "this file is in use by…")
-- **Hourly audit** looks at all your extensions, notices which ones have permission to read cookies, and warns you if a **new** one shows up that you didn't have before.
+- **Extension watch** reads a log that Brave/Chrome can keep of everything your extensions do. When an extension calls a cookie function, Cookie Guard sees it, and decides if it's a normal read or a theft pattern.
+- **File watch** asks Windows directly, *"which programs currently have my cookie file open?"* If it's anything other than the real Brave, you get an alert.
+- **Hourly audit** notices which extensions can read cookies, and warns you if a **new** one appears that you didn't have before.
 
 ---
 
-## 🖥️ Example alert
+## 🖥️ Example alerts
 
-When an extension reads a cookie, you'll see something like this:
+**🟡 A normal read** (extension doing its job):
 
 ```
 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
   EXTENSION READ A COOKIE
 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-  extension : Some Extension Name (abcdefgh...)
+  extension : Some Extension (abcdefgh...)
   api call  : cookies.get
-  args      : [{"name":"auth-token-data"}]
+  cookie    : session_pref
   time      : 2026-07-04 18:59:46
 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 ```
 
-That tells you the extension's **name**, the **exact call** it made, and **which cookie** it read. If you see an extension reading a `auth-token` or `session` cookie and its job has nothing to do with logins — that's a red flag.
+**🔴 A theft pattern** (grabbing many cookies fast):
+
+```
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+  POSSIBLE COOKIE THEFT  (RAPID BURST)
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+  extension : Some Extension (abcdefgh...)
+  read      : 6 cookies in <= 10s
+  cookies   : auth-token-data, sessionid, sid, __Secure-1PSID, login
+  time      : 2026-07-04 19:01:12
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+```
+
+The theft alert lists the extension **name**, how many cookies it grabbed, and **which ones**. Login-type cookies (`auth`, `session`, `sid`, `login`…) in that list are the ones that matter most.
 
 ---
 
@@ -161,13 +196,15 @@ Leave the window open. It quietly watches and alerts you when something reads yo
 python cookie_guard.py --browser brave --save-baseline
 ```
 
-**Other handy commands:**
+**All commands:**
 
 | Command | What it does |
 |---------|--------------|
 | `--browser chrome` | Watch Chrome instead of Brave |
 | `--audit` | Just list your cookie-capable extensions and exit |
 | `--save-baseline` | Remember your current extensions as trusted |
+| `--burst 5` | Theft alert after this many cookies in a burst (default **3**) |
+| `--burst-window 10` | Length of the "short burst" window in seconds (default 10) |
 | `--include-webrequest` | Also flag `webRequest` activity (noisier; good for testing) |
 | `--no-notify` | No desktop pop-ups (screen + log only) |
 
@@ -179,14 +216,18 @@ python cookie_guard.py --browser brave --save-baseline
 
 | Alert | Meaning | What to do |
 |-------|---------|------------|
-| **EXTENSION READ A COOKIE** | An extension called a cookie API | If its job doesn't need cookies (e.g. an exporter reading a login token), remove it |
-| **EXTERNAL PROGRAM OPENED YOUR COOKIE FILE** | A non-Brave program opened the cookie file | If you don't recognize the program, scan for malware and revoke your sessions |
-| **NEW COOKIE-CAPABLE EXTENSION APPEARED** | A new extension with cookie access showed up | Make sure *you* installed it on purpose |
+| 🟡 **EXTENSION READ A COOKIE** | An extension read one cookie | Usually fine. Note it if the extension has no reason to touch cookies. |
+| 🔴 **POSSIBLE COOKIE THEFT (RAPID BURST)** | An extension read many cookies fast | **Stop and check.** If you don't fully trust it, remove it and revoke sessions. |
+| 🔴 **POSSIBLE COOKIE THEFT (BULK-DUMP CALL)** | An extension used `getAll` / `debugger` to grab all cookies | **High suspicion.** Very few honest extensions need this. |
+| **EXTERNAL PROGRAM OPENED YOUR COOKIE FILE** | A non-Brave program opened the cookie file | If you don't recognize the program, scan for malware and revoke sessions. |
+| **NEW COOKIE-CAPABLE EXTENSION APPEARED** | A new extension with cookie access showed up | Make sure *you* installed it on purpose. |
 
 **If you get a real alert you can't explain:**
 1. Remove the extension / close the program.
 2. Log out of your important accounts **from a different device** (or change the password) — this makes any stolen cookie useless.
 3. Run a malware scan.
+
+> 🔑 **Important:** clearing your browser history does **not** protect you from an already-stolen cookie — the thief has their own copy. Only **logging out / changing your password** (which ends the session on the website's side) makes a stolen cookie useless.
 
 ---
 
@@ -198,9 +239,7 @@ python cookie_guard.py --browser brave --save-baseline
 1. Press `Win + R`, type `shell:startup`, press Enter.
 2. Copy a **shortcut** to `run_hidden.vbs` into that folder.
 
-Now Cookie Guard protects you from every login onward.
-
-> Background extension-watching only works if Brave was launched with the activity-logging flag from the setup step. Keep using your edited Brave shortcut.
+> Background extension-watching only works if Brave was launched with the activity-logging flag from the setup step. Keep using your edited Brave shortcut. Also: run **only one** copy of Cookie Guard at a time — two copies will flag each other.
 
 ---
 
@@ -208,8 +247,9 @@ Now Cookie Guard protects you from every login onward.
 
 Please read this so you trust the tool the right amount:
 
-- **It's an alarm, not a lock.** It reports access *after* it happens. It does not block it. The real protection is removing bad extensions and revoking sessions.
-- **It can't catch every trick.** A very advanced attacker could read cookies in ways that don't show up as a normal cookie API call or a normal file open. Cookie Guard catches the **common** methods, which is most of them — not all.
+- **It's an alarm, not a lock.** It reports access *after* it happens. It does not block it.
+- **A theft alert is a strong signal, not proof.** A few honest tools (a password manager, a backup/export tool you trust) might read several cookies too. Always check *which* extension it is and whether that behavior fits its job.
+- **It can't catch every trick.** A very advanced attacker could read cookies in ways that don't show up as a normal cookie call or file open. Cookie Guard catches the **common** methods — most of them, not all.
 - **Extension watch needs the activity-log flag.** Without the one-time setup, only the file watch runs.
 - **File watch is Windows-only** (it uses a Windows feature). The extension watch works on any OS where the browser writes the activity log.
 
@@ -225,11 +265,14 @@ No. Brave looks and behaves exactly the same. The tool only *reads* logs and fil
 **Is it safe / does it steal anything?**
 Cookie Guard is purely defensive. It never decrypts your cookie values and never sends anything anywhere. It only watches and alerts, locally, on your PC.
 
+**Why did it flag Python / my own script?**
+The file watch flags *any* non-Brave program that opens the cookie file — including your own test scripts. Check the program name: if it's something you started, it's expected.
+
 **Will it slow down my PC?**
 No noticeable impact. It checks quietly every 1–2 seconds.
 
 **I got "Extension activity log is OFF."**
-You opened Brave from a shortcut without the flag. Redo the [one-time setup](#-one-time-setup-important) and launch Brave from the edited shortcut.
+You opened Brave from a shortcut without the flag. Redo the [one-time setup](#-one-time-setup-important).
 
 **Can I use it for Chrome?**
 Yes — add `--browser chrome` and use a Chrome shortcut with the same flag.
