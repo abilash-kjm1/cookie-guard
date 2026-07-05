@@ -30,6 +30,7 @@ import sqlite3
 import tempfile
 import argparse
 import threading
+from collections import deque
 from datetime import datetime
 from pathlib import Path
 
@@ -243,7 +244,29 @@ def _read_new_activity(db_path, since, patterns):
     return rows, newmax
 
 
-def extension_watch_thread(browser, include_webrequest):
+def _cookie_names_from_args(args):
+    """Pull the cookie name(s) out of an activity-log 'args' JSON string."""
+    names = []
+    try:
+        data = json.loads(args)
+        if isinstance(data, list):
+            for it in data:
+                if isinstance(it, dict) and it.get("name"):
+                    names.append(str(it["name"]))
+        elif isinstance(data, dict) and data.get("name"):
+            names.append(str(data["name"]))
+    except Exception:  # noqa: BLE001
+        pass
+    return names
+
+
+def _is_bulk_call(api):
+    """getAll / debugger calls can dump ALL cookies at once — always suspicious."""
+    a = (api or "").lower()
+    return a.endswith("getall") or a.startswith("debugger.")
+
+
+def extension_watch_thread(browser, include_webrequest, burst_threshold, burst_window):
     dbs = find_activity_dbs(browser)
     if not dbs:
         msg = ("[EXT ] Extension activity log is OFF, so extension cookie-reads "
@@ -257,8 +280,13 @@ def extension_watch_thread(browser, include_webrequest):
     patterns = ["cookies.%", "debugger.%"] + (["webRequest.%"] if include_webrequest else [])
     print(f"[EXT ] watching {len(dbs)} activity log(s): cookies.*, debugger.*"
           + (", webRequest.*" if include_webrequest else ""))
+    print(f"[EXT ] THEFT alert if an extension reads {burst_threshold}+ cookies within "
+          f"{burst_window}s, or makes a bulk-dump call.")
     since = {str(db): _now_chrome_time() for _, db in dbs}
     seen = set()
+    recent = {}       # ext_id -> deque[(wall_time, cookie_name)]
+    last_theft = {}   # ext_id -> wall_time of last burst alert
+    cooldown = max(5, burst_window)
     while not stop.is_set():
         for prof, db in dbs:
             rows, newmax = _read_new_activity(db, since[str(db)], patterns)
@@ -272,15 +300,44 @@ def extension_watch_thread(browser, include_webrequest):
                 seen.add(key)
                 name = ext_name(prof, ext_id)
                 when = _fmt_time(r.get("time"))
-                args = (r.get("args") or "")[:120]
+                cnames = _cookie_names_from_args(r.get("args") or "")
+                now = time.time()
+
+                # 1) normal per-read alert (still pops every time)
                 alert("EXTENSION READ A COOKIE",
                       [("extension", f"{name} ({ext_id})"),
                        ("api call", api),
-                       ("args", args),
-                       ("page", r.get("page_url") or ""),
+                       ("cookie", ", ".join(cnames) if cnames else "(not shown)"),
                        ("time", when)],
                       "Extension read a cookie",
                       f"{name}: {api}")
+
+                # 2) bulk-dump call = always a theft alert
+                if _is_bulk_call(api):
+                    alert("POSSIBLE COOKIE THEFT  (BULK-DUMP CALL)",
+                          [("extension", f"{name} ({ext_id})"),
+                           ("api call", api),
+                           ("why", "getAll/debugger can read ALL cookies at once"),
+                           ("time", when)],
+                          "POSSIBLE COOKIE THEFT",
+                          f"{name} made a bulk cookie-dump call ({api})")
+
+                # 3) burst detection = many cookies read quickly
+                dq = recent.setdefault(ext_id, deque())
+                for item in (cnames or [api]):
+                    dq.append((now, item))
+                while dq and now - dq[0][0] > burst_window:
+                    dq.popleft()
+                if len(dq) >= burst_threshold and (now - last_theft.get(ext_id, 0)) > cooldown:
+                    last_theft[ext_id] = now
+                    distinct = list({n for _, n in dq})
+                    alert("POSSIBLE COOKIE THEFT  (RAPID BURST)",
+                          [("extension", f"{name} ({ext_id})"),
+                           ("read", f"{len(dq)} cookies in <= {burst_window}s"),
+                           ("cookies", ", ".join(distinct[:8])),
+                           ("time", when)],
+                          "POSSIBLE COOKIE THEFT",
+                          f"{name} read {len(dq)} cookies quickly")
         stop.wait(1.5)
 
 
@@ -508,6 +565,8 @@ def main():
     ap.add_argument("--audit", action="store_true", help="list risky extensions and exit")
     ap.add_argument("--save-baseline", action="store_true", help="save trusted extension set and exit")
     ap.add_argument("--include-webrequest", action="store_true", help="also flag webRequest.* (noisier)")
+    ap.add_argument("--burst", type=int, default=3, help="theft alert after this many cookie reads in the burst window (default 3)")
+    ap.add_argument("--burst-window", type=int, default=10, help="seconds for the burst window (default 10)")
     ap.add_argument("--no-notify", action="store_true")
     args = ap.parse_args()
 
@@ -533,7 +592,7 @@ def main():
     log("Cookie Guard started")
 
     threads = [
-        threading.Thread(target=extension_watch_thread, args=(browser, args.include_webrequest), daemon=True),
+        threading.Thread(target=extension_watch_thread, args=(browser, args.include_webrequest, args.burst, args.burst_window), daemon=True),
         threading.Thread(target=file_watch_thread, args=(browser,), daemon=True),
         threading.Thread(target=diff_thread, args=(browser,), daemon=True),
     ]
